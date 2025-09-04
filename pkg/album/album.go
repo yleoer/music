@@ -1,5 +1,4 @@
-// album.go
-package main
+package album
 
 import "time"
 

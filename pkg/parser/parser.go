@@ -1,24 +1,39 @@
-// parser.go
-package main
+package parser
 
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yleoer/music/pkg/album"
+	"github.com/yleoer/music/pkg/converter"
+	"github.com/yleoer/music/pkg/util"
 )
+
+// CueParser 负责解析 CUE 文件和 Info.txt
+type CueParser struct {
+	converter converter.TextConverter
+	logger    *log.Logger
+}
+
+// NewCueParser 创建一个新的 CueParser 实例
+func NewCueParser(tc converter.TextConverter, logger *log.Logger) *CueParser {
+	return &CueParser{converter: tc, logger: logger}
+}
 
 type CueSheet struct {
 	WavFile string
-	Tracks  []Track
+	Tracks  []album.Track
 }
 
 // parseCueTime 将 MM:SS:FF 格式的时间字符串转换为 time.Duration
-func parseCueTime(timeStr string) (time.Duration, error) {
+func (c CueParser) parseCueTime(timeStr string) (time.Duration, error) {
 	parts := strings.Split(timeStr, ":")
 	if len(parts) != 3 {
 		return 0, fmt.Errorf("invalid time format: %s", timeStr)
@@ -32,14 +47,14 @@ func parseCueTime(timeStr string) (time.Duration, error) {
 
 // parseCueFile 解析 .cue 文件并返回一个 CueSheet 结构体
 // 现在它会在内部调用 readTextFileContent 来处理编码
-func parseCueFile(cuePath string) (*CueSheet, error) {
-	content, err := readTextFileContent(cuePath) // 使用通用读取函数
+func (c CueParser) parseCueFile(cuePath string) (*CueSheet, error) {
+	content, err := util.ReadTextFileContent(cuePath) // 使用通用读取函数
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CUE file with encoding detection: %w", err)
 	}
 
 	cue := &CueSheet{}
-	var currentTrack *Track
+	var currentTrack *album.Track
 
 	fileRegex := regexp.MustCompile(`(?i)FILE "([^"]+)"`) // (?i) for case-insensitive
 	trackRegex := regexp.MustCompile(`(?i)TRACK (\d+) AUDIO`)
@@ -57,12 +72,12 @@ func parseCueFile(cuePath string) (*CueSheet, error) {
 				cue.Tracks = append(cue.Tracks, *currentTrack)
 			}
 			num, _ := strconv.Atoi(matches[1])
-			currentTrack = &Track{Number: num}
+			currentTrack = &album.Track{Number: num}
 		} else if currentTrack != nil {
 			if matches := titleRegex.FindStringSubmatch(line); len(matches) > 1 {
 				currentTrack.Title = matches[1]
 			} else if matches := indexRegex.FindStringSubmatch(line); len(matches) > 1 {
-				startTime, _ := parseCueTime(matches[1])
+				startTime, _ := c.parseCueTime(matches[1])
 				currentTrack.StartTime = startTime
 			}
 		}
@@ -81,10 +96,10 @@ func parseCueFile(cuePath string) (*CueSheet, error) {
 	return cue, nil
 }
 
-// processCueFile 读取并解析 CUE 文件，返回 Disc 对象（此函数在 scanner.go 中被调用，需要确保能访问到 parser.go 中的函数）
+// ProcessCueFile 读取并解析 CUE 文件，返回 Disc 对象（此函数在 scanner.go 中被调用，需要确保能访问到 parser.go 中的函数）
 // 这里是其简化版本，确保它能正确调用 parseCueFile
-func processCueFile(cuePath string, album *Album, discNumber int) (*Disc, error) {
-	cueSheet, err := parseCueFile(cuePath)
+func (c CueParser) ProcessCueFile(cuePath string, a *album.Album, discNumber int) (*album.Disc, error) {
+	cueSheet, err := c.parseCueFile(cuePath)
 	if err != nil {
 		return nil, err
 	}
@@ -96,22 +111,22 @@ func processCueFile(cuePath string, album *Album, discNumber int) (*Disc, error)
 		return nil, fmt.Errorf("source WAV file '%s' specified in CUE not found", sourceWavPath)
 	}
 
-	disc := &Disc{
+	disc := &album.Disc{
 		DiscNumber: discNumber,
 		CuePath:    cuePath,
 		WavPath:    sourceWavPath,
-		Tracks:     make([]*Track, 0, len(cueSheet.Tracks)),
+		Tracks:     make([]*album.Track, 0, len(cueSheet.Tracks)),
 	}
 
 	// 填充轨道信息，计算 EndTime
 	for i, cueTrack := range cueSheet.Tracks {
-		track := &Track{
+		track := &album.Track{
 			Number:      cueTrack.Number,
-			Title:       TradToSim(cueTrack.Title), // CUE 中的标题也可能需要繁转简
-			Album:       album.Title,
-			AlbumArtist: album.Artist,
-			Artist:      album.Artist, // 默认与专辑艺术家相同，之后可能被网络元数据覆盖
-			Year:        album.Year,
+			Title:       converter.GetTextConverter().TradToSim(cueTrack.Title), // CUE 中的标题也可能需要繁转简
+			Album:       a.Title,
+			AlbumArtist: a.Artist,
+			Artist:      a.Artist, // 默认与专辑艺术家相同，之后可能被网络元数据覆盖
+			Year:        a.Year,
 			StartTime:   cueTrack.StartTime,
 		}
 
@@ -121,10 +136,10 @@ func processCueFile(cuePath string, album *Album, discNumber int) (*Disc, error)
 			reFt := regexp.MustCompile(`(.+)[ （](?:与|feat\.)(.+)[）)]`)
 			if matches := reFt.FindStringSubmatch(track.Title); len(matches) > 2 {
 				track.Title = strings.TrimSpace(matches[1])
-				track.Artist = fmt.Sprintf("%s, %s", album.Artist, TradToSim(matches[2])) // 歌曲艺术家
+				track.Artist = fmt.Sprintf("%s, %s", a.Artist, converter.GetTextConverter().TradToSim(matches[2])) // 歌曲艺术家
 			}
 		} else {
-			track.Artist = album.Artist // 默认与专辑艺术家相同
+			track.Artist = a.Artist // 默认与专辑艺术家相同
 		}
 
 		// 计算当前轨道的结束时间

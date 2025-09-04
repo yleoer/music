@@ -1,68 +1,82 @@
-// scanner.go
-package main
+package scanner
 
 import (
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+
+	"github.com/yleoer/music/pkg/album"
+	"github.com/yleoer/music/pkg/converter"
+	"github.com/yleoer/music/pkg/parser"
+	"github.com/yleoer/music/pkg/util"
 )
 
-// ScanAlbumDirectory 扫描专辑目录并构建 Album 对象
-func ScanAlbumDirectory(rootPath string) (*Album, error) {
-	album := &Album{Path: rootPath}
+// AlbumScanner 负责扫描专辑目录并构建 Album 对象
+type AlbumScanner struct {
+	cueParser parser.CueParser // 修改为 CueParser 实例，而不是接口
+	converter converter.TextConverter
+	logger    *log.Logger
+}
 
-	// 1. 读取 Info.txt 并解析（使用新的通用读取函数）
-	infoPath := filepath.Join(rootPath, "Info.txt")
-	if infoContent, err := readTextFileContent(infoPath); err == nil {
-		album.InfoContent = infoContent
-		parseInfoContent(album) // 调用更新后的解析函数
-	} else {
-		log.Printf("Warning: Info.txt not found or error reading in %s: %v. Attempting to parse from directory name.", rootPath, err)
-		// 尝试从目录名解析作为备用
-		album.Artist, album.Title, album.Year = parseArtistTitleYearFromDir(filepath.Base(rootPath))
+// NewAlbumScanner 创建一个新的 AlbumScanner 实例
+func NewAlbumScanner(cp *parser.CueParser, tc converter.TextConverter, logger *log.Logger) *AlbumScanner {
+	return &AlbumScanner{
+		cueParser: *cp, // 注意这里是结构体，所以直接赋值。如果 CueParser 是接口，则传递接口。
+		converter: tc,
+		logger:    logger,
 	}
-	// 确保所有从 Info.txt 或目录名获取的字段都转换为简体
-	album.Artist = TradToSim(album.Artist)
-	album.Title = TradToSim(album.Title)
-	// Year通常是数字，无需转换
+}
 
-	// 2. 查找封面
+// ScanAlbumDirectory 扫描专辑目录并构建 Album 对象
+func (s *AlbumScanner) ScanAlbumDirectory(rootPath string) (*album.Album, error) {
+	// ... (原逻辑，但调用 s.cueParser 和 s.converter 方法) ...
+	albumObj := &album.Album{Path: rootPath}
+	infoPath := filepath.Join(rootPath, "Info.txt")
+	if infoContent, err := util.ReadTextFileContent(infoPath); err == nil {
+		albumObj.InfoContent = infoContent
+		s.parseInfoContent(albumObj)
+	} else {
+		s.logger.Printf("Warning: Info.txt not found or error reading in %s: %v. Attempting to parse from directory name.", rootPath, err)
+		albumObj.Artist, albumObj.Title, albumObj.Year = s.parseArtistTitleYearFromDir(filepath.Base(rootPath))
+	}
+	albumObj.Artist = s.converter.TradToSim(albumObj.Artist)
+	albumObj.Title = s.converter.TradToSim(albumObj.Title)
+	// Find cover art
 	coverPath := filepath.Join(rootPath, "folder.jpg")
 	if _, err := os.Stat(coverPath); err == nil {
-		album.CoverArt = coverPath
+		albumObj.CoverArt = coverPath
 	}
-
-	// 3. 遍历子目录查找 CUE 文件
-	log.Printf("  Searching for CUE files in %s...", rootPath)
+	s.logger.Printf("  Searching for CUE files in %s...", rootPath)
 	discNumber := 1
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".cue") {
-			log.Printf("  Found CUE file: %s", path)
-			disc, err := processCueFile(path, album, discNumber) // 传入 discNumber
+		// 忽略子目录中的 .cue 文件，只处理一级目录或与音频文件同级的 .cue
+		// 或者，如果你的 CUE 文件可能在子目录，这里需要更复杂的逻辑
+		if !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".cue") && filepath.Dir(path) == rootPath {
+			s.logger.Printf("  Found CUE file: %s", path)
+			disc, err := s.cueParser.ProcessCueFile(path, albumObj, discNumber) // 调用新的 CueParser 方法
 			if err != nil {
-				log.Printf("Error processing CUE file %s: %v", path, err)
+				s.logger.Printf("Error processing CUE file %s: %v", path, err)
 				return nil // continue walking
 			}
-			album.Discs = append(album.Discs, disc)
+			albumObj.Discs = append(albumObj.Discs, disc)
 			discNumber++
 		}
 		return nil
 	})
-
-	// 对找到的 Disc 进行排序，确保 Disc 1, Disc 2 顺序
-	// 可选：实现一个 sort.Slice 逻辑
-
-	return album, err
+	sort.Slice(albumObj.Discs, func(i, j int) bool {
+		return albumObj.Discs[i].DiscNumber < albumObj.Discs[j].DiscNumber
+	})
+	return albumObj, err
 }
 
-// parseInfoContent 从 Info.txt 内容中提取信息
-// 使用正则表达式更好地匹配你提供的文本格式
-func parseInfoContent(album *Album) {
+// parseInfoContent 和 parseArtistTitleYearFromDir 成为 AlbumScanner 的私有方法
+func (s *AlbumScanner) parseInfoContent(album *album.Album) {
 	content := album.InfoContent
 
 	// 专辑名称
@@ -87,12 +101,8 @@ func parseInfoContent(album *Album) {
 		log.Printf("Warning: Could not extract artist from Info.txt. Falling back to default \"Unknown Artist\".")
 		album.Artist = "Unknown Artist"
 	}
-
-	// 后续可以继续扩展，例如提取出版商等
 }
-
-// parseArtistTitleYearFromDir 从目录名解析艺术家、标题和年份作为备用方案
-func parseArtistTitleYearFromDir(dirName string) (artist, title, year string) {
+func (s *AlbumScanner) parseArtistTitleYearFromDir(dirName string) (artist, title, year string) {
 	// 假设目录名为 "艺术家 - 专辑名 年份" 或 "专辑名 年份"
 	// 示例：劉德華 - 笨小孩 1993-1998 國語精選 WAV+CUE -> Artist: 劉德華, Title: 笨小孩 1993-1998 國語精選, Year: 1993 (或空)
 

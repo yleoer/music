@@ -1,5 +1,4 @@
-// metadata.go
-package main
+package metadata
 
 import (
 	"encoding/json"
@@ -8,6 +7,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"time"
+
+	"github.com/yleoer/music/pkg/album"
 )
 
 const NeteaseSearchAPI = "http://music.163.com/api/search/get/web"
@@ -33,8 +35,29 @@ type NeteaseLyricResult struct {
 	} `json:"lrc"`
 }
 
+// NeteaseClient 是 Fetcher 的网易云音乐实现
+type NeteaseClient struct {
+	baseURL    string
+	httpClient *http.Client
+	logger     *log.Logger
+}
+
+// NewNeteaseClient 创建一个新的 NeteaseClient 实例
+func NewNeteaseClient(baseURL string, timeout time.Duration, logger *log.Logger) Fetcher {
+	if baseURL == "" {
+		baseURL = "http://music.163.com" // Default to Netease's base URL
+	}
+	return &NeteaseClient{
+		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: timeout,
+		},
+		logger: logger,
+	}
+}
+
 // FetchMetadataAndUpdateTrack 搜索并更新 Track 信息
-func FetchMetadataAndUpdateTrack(track *Track) {
+func (c *NeteaseClient) FetchMetadataAndUpdateTrack(track *album.Track) {
 	log.Printf("    -> Searching online for: [%s - %s]", track.Artist, track.Title)
 
 	query := fmt.Sprintf("%s %s", track.Title, track.Artist)
@@ -63,11 +86,10 @@ func FetchMetadataAndUpdateTrack(track *Track) {
 	log.Printf("    -> Matched song: %s (ID: %d)", bestMatch.Name, bestMatch.ID)
 
 	// 获取歌词
-	fetchLyrics(track)
+	c.fetchLyrics(track)
 }
 
-// fetchLyrics 获取歌词
-func fetchLyrics(track *Track) {
+func (c *NeteaseClient) fetchLyrics(track *album.Track) {
 	if track.OnlineID == 0 {
 		return
 	}
