@@ -122,7 +122,7 @@ func (c CueParser) ProcessCueFile(cuePath string, a *album.Album, discNumber int
 	for i, cueTrack := range cueSheet.Tracks {
 		track := &album.Track{
 			Number:      cueTrack.Number,
-			Title:       converter.GetTextConverter().TradToSim(cueTrack.Title), // CUE 中的标题也可能需要繁转简
+			Title:       c.converter.TradToSim(cueTrack.Title), // CUE 中的标题也可能需要繁转简
 			Album:       a.Title,
 			AlbumArtist: a.Artist,
 			Artist:      a.Artist, // 默认与专辑艺术家相同，之后可能被网络元数据覆盖
@@ -136,7 +136,7 @@ func (c CueParser) ProcessCueFile(cuePath string, a *album.Album, discNumber int
 			reFt := regexp.MustCompile(`(.+)[ （](?:与|feat\.)(.+)[）)]`)
 			if matches := reFt.FindStringSubmatch(track.Title); len(matches) > 2 {
 				track.Title = strings.TrimSpace(matches[1])
-				track.Artist = fmt.Sprintf("%s, %s", a.Artist, converter.GetTextConverter().TradToSim(matches[2])) // 歌曲艺术家
+				track.Artist = fmt.Sprintf("%s, %s", a.Artist, c.converter.TradToSim(matches[2])) // 歌曲艺术家
 			}
 		} else {
 			track.Artist = a.Artist // 默认与专辑艺术家相同
